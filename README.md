@@ -4,14 +4,15 @@
 
 A collection of scripts to bypass Mobile Device Management (MDM) enrollment during macOS setup.
 
-**Choose your script:**
+**Escolha seu script:**
 
-| Script | Best for | Run from |
-|--------|----------|----------|
-| `bypass-mdm-v3.sh` | Apple Silicon / macOS 11-26. **Recommended.** | Recovery |
-| `bypass-mdm-v2.sh` | Simple cases, Intel Macs | Recovery |
-| `bypass-mdm.sh` | Legacy, hardcoded volume names | Recovery |
-| `bypass-mdm-dualboot.sh` | Dual-boot (enrolled + personal macOS) | Enrolled OS (sudo) |
+| Script | Melhor para | Executar de |
+|--------|-------------|-------------|
+| `bypass-mdm-express.sh` | **Recomendado.** Tudo em um. Backup + bypass + restore. | Recovery ou macOS normal |
+| `bypass-mdm-v3.sh` | Apple Silicon / macOS 11-26 | Recovery |
+| `bypass-mdm-v2.sh` | Casos simples, Intel | Recovery |
+| `bypass-mdm.sh` | Legado, nomes fixos | Recovery |
+| `bypass-mdm-dualboot.sh` | Dual-boot (gerenciado + pessoal) | macOS enrolado (sudo) |
 
 ### v3 — Apple Silicon / SSV-aware (Recommended)
 
@@ -58,7 +59,26 @@ Make sure the target volume names are correct — the script will ask for both t
 
 ---
 
-### Instructions (Recovery mode)
+### Express — Tudo em um (recomendado)
+
+O script **express** foi feito pra ser o mais simples possível:
+- Coloca num SSD externo, conecta em qualquer Mac, executa
+- Faz **backup automático** do estado original antes de qualquer modificação
+- **Restaura** tudo se precisar (leva na Apple, eles re-matriculam)
+- Detecta se está no Recovery ou no macOS normal e age conforme o possível
+- Nunca deleta seus dados
+
+```bash
+# 1. Copie o script pro seu SSD externo
+# 2. Conecte o SSD no Mac
+# 3. Abra o Terminal e:
+chmod +x /Volumes/SEU_SSD/bypass-mdm-express.sh
+sudo /Volumes/SEU_SSD/bypass-mdm-express.sh
+```
+
+O backup fica no próprio SSD (`/.bypass-backup`). Pra restaurar é só rodar de novo e escolher "Restore".
+
+### v3 — Apple Silicon / SSV-aware
 
 1. Long press Power to shut down.
 2. Boot into Recovery:
