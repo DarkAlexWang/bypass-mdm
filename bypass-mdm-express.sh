@@ -2,327 +2,318 @@
 set -euo pipefail
 
 # bypass-mdm-express.sh — All-in-one MDM tool.
-# Put this on an external SSD. Plug. Run. Done.
+# Put this on an external SSD. Plug into any Mac. Run from Recovery.
 #
-# Three modes:
-#   1. Backup + Bypass — saves current state, removes MDM
-#   2. Restore — reverts to pre-bypass state  
-#   3. Check status — see if MDM is active
+# What it does:
+#   1. Backs up the current state (hosts, config profiles)
+#   2. Suppresses MDM enrollment
+#   3. Can restore the original state later
 #
-# Works from Recovery (full bypass) or normal boot (sudo only, partial bypass).
-# Always reversible. Never deletes your data.
+# Why "express": no curl, no download, no typing URLs.
+# Just chmod +x and run. Backup stays on the SSD so you can
+# restore whenever you want — take it to Apple, let them
+# re-enroll, then restore if needed.
+#
+# RUN FROM RECOVERY (Apple Silicon: hold Power -> Options ->
+# Utilities -> Terminal). Use responsibly.
 
 RED='\033[1;31m'; GRN='\033[1;32m'; BLU='\033[1;34m'; YEL='\033[1;33m'; CYAN='\033[1;36m'; NC='\033[0m'
-error_exit() { echo -e "${RED}ERRO: $1${NC}" >&2; exit 1; }
-warn()       { echo -e "${YEL}AVISO: $1${NC}" >&2; }
-success()    { echo -e "${GRN}OK $1${NC}"; }
-info()       { echo -e "${BLU}  $1${NC}"; }
-step()       { echo -e "${CYAN}> $1${NC}"; }
+error_exit() { echo -e "${RED}ERROR: $1${NC}" >&2; exit 1; }
+warn()       { echo -e "${YEL}WARNING: $1${NC}" >&2; }
+success()    { echo -e "${GRN}\u2713 $1${NC}"; }
+info()       { echo -e "${BLU}\u2139 $1${NC}"; }
+step()       { echo -e "${CYAN}\u25b8 $1${NC}"; }
+
+PB=/usr/libexec/PlistBuddy
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKUP_DIR="$SCRIPT_DIR/.bypass-backup"
 
-detect_environment() {
-	if [ -d "/Volumes/Macintosh HD" ] || [ -d "/Volumes/MacOS" ] || [ -d "/System/Installation" ]; then
-		echo "recovery"
-	elif [ "$(csrutil status 2>/dev/null | grep -c 'enabled')" -eq 1 ]; then
-		echo "normal_sip_on"  
-	else
-		echo "normal_sip_off"
+# ------------------------------------------------------------------
+# Detect and mount the Data volume
+# ------------------------------------------------------------------
+resolve_data_volume() {
+	step "Locating the Data volume by APFS role..."
+
+	local id mount_pt
+
+	id=$(diskutil apfs list 2>/dev/null \
+		| awk '/\(Data\)/ && match($0, /disk[0-9]+s[0-9]+/) {print substr($0, RSTART, RLENGTH); exit}')
+
+	if [ -z "$id" ] || ! diskutil info "/dev/$id" >/dev/null 2>&1; then
+		id=$(diskutil list 2>/dev/null \
+			| awk '/[[:space:]]Data[[:space:]]/{for(i=1;i<=NF;i++) if($i ~ /^disk[0-9]+s[0-9]+$/) v=$i} END{print v}')
 	fi
-}
 
-find_data_volume() {
-	local vol=""
-	for v in /Volumes/*; do
-		[ -d "$v/private/var/db/dslocal/nodes/Default" ] && vol="$v" && break
-	done
-	if [ -z "$vol" ] && [ -d "/Volumes/Data" ]; then
-		vol="/Volumes/Data"
-	fi
-	echo "$vol"
-}
-
-find_system_volume() {
-	local data_vol="$1"
-	[ -z "$data_vol" ] && return 1
-	for v in /Volumes/*; do
-		[ "$v" != "$data_vol" ] && [ -d "$v/System" ] && [ ! -d "$v/private/var/db/dslocal" ] && echo "$v" && return 0
-	done
-	echo ""
-}
-
-get_hosts_path() {
-	local env="$1" data_vol="$2" sys_vol="$3"
-	if [ "$env" = "recovery" ] && [ -n "$data_vol" ]; then
-		echo "$data_vol/private/etc/hosts"
-	elif [ "$env" = "recovery" ] && [ -n "$sys_vol" ]; then
-		echo "$sys_vol/etc/hosts"
-	else
-		echo "/etc/hosts"
-	fi
-}
-
-get_cfg_path() {
-	local env="$1" data_vol="$2" sys_vol="$3"
-	if [ "$env" = "recovery" ] && [ -n "$data_vol" ]; then
-		echo "$data_vol/private/var/db/ConfigurationProfiles/Settings"
-	elif [ "$env" = "recovery" ] && [ -n "$sys_vol" ]; then
-		echo "$sys_vol/var/db/ConfigurationProfiles/Settings"
-	else
+	if [ -z "$id" ] || ! diskutil info "/dev/$id" >/dev/null 2>&1; then
+		warn "Could not auto-detect the Data volume."
+		diskutil list >&2
 		echo ""
+		read -p "Type the Data volume identifier (e.g. disk3s1): " id </dev/tty
+		id="${id#/dev/}"
 	fi
+
+	[ -n "$id" ] || error_exit "No Data volume identifier provided."
+	local data_dev="/dev/$id"
+	diskutil info "$data_dev" >/dev/null 2>&1 || error_exit "Not a valid disk: $data_dev"
+	info "Data volume device: $data_dev"
+
+	_mount_point() { diskutil info "$data_dev" 2>/dev/null | awk -F': *' '/Mount Point/{print $2}' | sed 's/[[:space:]]*$//'; }
+
+	mount_pt=$(_mount_point)
+
+	if [ -z "$mount_pt" ] || [ ! -d "$mount_pt" ]; then
+		info "Data volume not mounted — mounting..."
+		diskutil mount "$data_dev" 2>/dev/null || true
+		mount_pt=$(_mount_point)
+	fi
+
+	if [ -z "$mount_pt" ] || [ ! -d "$mount_pt" ]; then
+		warn "Data volume is FileVault-locked — need to unlock."
+		echo -e "${YEL}Enter the password of an account on this Mac (or FileVault recovery key):${NC}" >&2
+		diskutil apfs unlockVolume "$data_dev" 2>/dev/null \
+			|| error_exit "Failed to unlock Data volume."
+		mount_pt=$(_mount_point)
+	fi
+
+	[ -d "$mount_pt" ] || error_exit "Data volume mount point not found."
+	[ -d "$mount_pt/private/var/db/dslocal/nodes/Default" ] \
+		|| error_exit "This does not look like a macOS Data volume (no dslocal node)."
+
+	success "Data volume mounted at: $mount_pt"
+	echo "$mount_pt"
 }
 
+# ------------------------------------------------------------------
+# Backup original state to SSD
+# ------------------------------------------------------------------
 backup_state() {
-	local env="$1" data_vol="$2" sys_vol="$3"
+	local dm="$1"
 	mkdir -p "$BACKUP_DIR"
-	step "Salvando backup em $BACKUP_DIR"
+	step "Saving backup to $BACKUP_DIR"
 
-	local hosts_path
-	hosts_path=$(get_hosts_path "$env" "$data_vol" "$sys_vol")
-	local cfg_path
-	cfg_path=$(get_cfg_path "$env" "$data_vol" "$sys_vol")
-
-	if [ -f "$hosts_path" ]; then
-		cp "$hosts_path" "$BACKUP_DIR/hosts.backup"
-		success "hosts salvo"
+	if [ -f "$dm/private/etc/hosts" ]; then
+		cp "$dm/private/etc/hosts" "$BACKUP_DIR/hosts.backup"
 	fi
-	if [ -d "$cfg_path" ]; then
+	if [ -d "$dm/private/var/db/ConfigurationProfiles/Settings" ]; then
 		mkdir -p "$BACKUP_DIR/ConfigurationProfiles"
-		cp -r "$cfg_path"/* "$BACKUP_DIR/ConfigurationProfiles/" 2>/dev/null || true
-		success "config profiles salvos"
+		cp -r "$dm/private/var/db/ConfigurationProfiles/Settings/"* "$BACKUP_DIR/ConfigurationProfiles/" 2>/dev/null || true
+	fi
+	if [ -f "$dm/private/var/db/com.apple.xpc.launchd/disabled.plist" ]; then
+		cp "$dm/private/var/db/com.apple.xpc.launchd/disabled.plist" "$BACKUP_DIR/disabled.plist.backup" 2>/dev/null || true
 	fi
 	date +%Y-%m-%d_%H-%M-%S > "$BACKUP_DIR/timestamp"
-	success "Backup concluido em $(cat "$BACKUP_DIR/timestamp")"
+	echo "$dm" > "$BACKUP_DIR/data_volume_path"
+	success "Backup saved: $(cat "$BACKUP_DIR/timestamp")"
 }
 
+# ------------------------------------------------------------------
+# Restore original state from SSD backup
+# ------------------------------------------------------------------
 restore_state() {
-	local env="$1" data_vol="$2" sys_vol="$3"
-	
 	if [ ! -f "$BACKUP_DIR/timestamp" ]; then
-		error_exit "Nenhum backup encontrado em $BACKUP_DIR"
+		error_exit "No backup found at $BACKUP_DIR"
 	fi
 
-	step "Restaurando backup de $(cat "$BACKUP_DIR/timestamp")"
-
-	local hosts_path
-	hosts_path=$(get_hosts_path "$env" "$data_vol" "$sys_vol")
-	local cfg_path
-	cfg_path=$(get_cfg_path "$env" "$data_vol" "$sys_vol")
-
-	if [ -f "$BACKUP_DIR/hosts.backup" ] && [ -f "$hosts_path" ]; then
-		sed -i '' '/# Added by bypass/d' "$hosts_path" 2>/dev/null || true
-		cp "$BACKUP_DIR/hosts.backup" "$hosts_path"
-		success "hosts restaurado"
-	fi
-	if [ -d "$BACKUP_DIR/ConfigurationProfiles" ] && [ -n "$cfg_path" ]; then
-		mkdir -p "$cfg_path"
-		cp -r "$BACKUP_DIR/ConfigurationProfiles"/* "$cfg_path/" 2>/dev/null || true
-		success "config profiles restaurados"
+	local dm
+	if [ -f "$BACKUP_DIR/data_volume_path" ]; then
+		dm=$(cat "$BACKUP_DIR/data_volume_path")
+		if [ ! -d "$dm/private/var" ]; then
+			warn "Saved Data volume path ($dm) not available. Re-detecting..."
+			dm=$(resolve_data_volume)
+		fi
+	else
+		dm=$(resolve_data_volume)
 	fi
 
-	# Re-enable daemon
-	if [ "$env" != "recovery" ]; then
-		sudo launchctl enable system/com.apple.ManagedClient.enroll 2>/dev/null || true
-		sudo launchctl enable system/com.apple.mdmclient.daemon.runatboot 2>/dev/null || true
-		success "daemons reativados"
+	step "Restoring from backup ($(cat "$BACKUP_DIR/timestamp"))"
+	echo -e "${YEL}Target Data volume: $dm${NC}"
+
+	# Restore hosts
+	if [ -f "$BACKUP_DIR/hosts.backup" ]; then
+		cp "$BACKUP_DIR/hosts.backup" "$dm/private/etc/hosts"
+		success "hosts restored"
 	fi
 
+	# Restore config profiles markers
+	if [ -d "$BACKUP_DIR/ConfigurationProfiles" ]; then
+		local cfg="$dm/private/var/db/ConfigurationProfiles/Settings"
+		mkdir -p "$cfg"
+		cp -r "$BACKUP_DIR/ConfigurationProfiles/"* "$cfg/" 2>/dev/null || true
+		success "config profiles restored"
+	fi
+
+	# Restore launchd disabled.plist
+	if [ -f "$BACKUP_DIR/disabled.plist.backup" ]; then
+		local ldp="$dm/private/var/db/com.apple.xpc.launchd/disabled.plist"
+		mkdir -p "$(dirname "$ldp")"
+		cp "$BACKUP_DIR/disabled.plist.backup" "$ldp"
+		success "launchd override restored"
+	fi
+
+	# Remove enrollment block from hosts (the lines we added)
+	if [ -f "$dm/private/etc/hosts" ]; then
+		sed -i '' '/# Added by bypass-mdm/d' "$dm/private/etc/hosts" 2>/dev/null || true
+	fi
+
+	rm -f "$BACKUP_DIR/data_volume_path"
 	rm -f "$BACKUP_DIR/timestamp"
-	success "Restauro concluido"
+	success "Restore complete"
 }
 
-block_hosts() {
-	local hosts_path="$1"
-	[ ! -f "$hosts_path" ] && touch "$hosts_path"
+# ------------------------------------------------------------------
+# Check if running in Recovery
+# ------------------------------------------------------------------
+check_recovery() {
+	if [ -d "/System/Installation" ] || [ -d "/Volumes/Macintosh HD" ] || [ -d "/Volumes/MacOS" ]; then
+		return 0
+	fi
+	# Check if we're on a recovery volume
+	local vol
+	vol=$(diskutil info / 2>/dev/null | awk -F': *' '/Volume Name/{print $2}' | xargs)
+	case "$vol" in
+		"Recovery"*|"macOS Base"*) return 0 ;;
+	esac
+	return 1
+}
 
-	grep -q "Added by bypass-mdm" "$hosts_path" 2>/dev/null || {
-		echo "" >>"$hosts_path"
-		echo "# Added by bypass-mdm — DEP enrollment block" >>"$hosts_path"
+# ------------------------------------------------------------------
+# Core suppression logic (same across all modes)
+# ------------------------------------------------------------------
+suppress_enrollment() {
+	local dm="$1"
+
+	step "Reading existing DEP record..."
+	local mdm_host="" org=""
+	local cfg="$dm/private/var/db/ConfigurationProfiles/Settings"
+	if [ -f "$cfg/.cloudConfigRecordFound" ]; then
+		mdm_host=$(plutil -convert xml1 -o - "$cfg/.cloudConfigRecordFound" 2>/dev/null \
+			| grep -ioE 'https?://[a-z0-9._-]+' | sed -E 's#https?://##' \
+			| sort -u | grep -viE '(^|\.)apple\.com$' | head -1)
+		org=$(plutil -convert xml1 -o - "$cfg/.cloudConfigRecordFound" 2>/dev/null \
+			| grep -iA1 OrganizationName | tail -1 | sed -E 's/.*<string>(.*)<\/string>.*/\1/')
+		[ -n "$org" ]      && info "Device assigned to: $org"
+		[ -n "$mdm_host" ] && info "Org MDM host: $mdm_host"
+	else
+		info "No DEP activation record found."
+	fi
+	echo ""
+
+	# Block domains
+	step "Blocking enrollment domains..."
+	local hosts="$dm/private/etc/hosts"
+	[ -f "$hosts" ] || { mkdir -p "$(dirname "$hosts")"; touch "$hosts"; }
+	grep -q "Added by bypass-mdm" "$hosts" 2>/dev/null || {
+		echo "" >>"$hosts"
+		echo "# Added by bypass-mdm — DEP enrollment block" >>"$hosts"
 	}
-
-	local domains=(
-		iprofiles.apple.com
-		deviceenrollment.apple.com
-		mdmenrollment.apple.com
-		acmdm.apple.com
-	)
+	local domains=(iprofiles.apple.com deviceenrollment.apple.com mdmenrollment.apple.com acmdm.apple.com)
+	[ -n "$mdm_host" ] && domains+=("$mdm_host")
 	local d
 	for d in "${domains[@]}"; do
-		grep -qiE "[[:space:]]$d(\$|[[:space:]])" "$hosts_path" 2>/dev/null && continue
-		printf '0.0.0.0 %s\n::      %s\n' "$d" "$d" >>"$hosts_path"
-		success "bloqueado $d"
+		grep -qiE "[[:space:]]$d(\$|[[:space:]])" "$hosts" 2>/dev/null && { info "$d already blocked"; continue; }
+		printf '0.0.0.0 %s\n::      %s\n' "$d" "$d" >>"$hosts"
+		success "blocked $d"
 	done
-}
+	echo ""
 
-reset_markers() {
-	local cfg_path="$1"
-	[ -z "$cfg_path" ] && return 1
-	mkdir -p "$cfg_path"
-	rm -f "$cfg_path/.cloudConfigHasActivationRecord" \
-	      "$cfg_path/.cloudConfigRecordFound" \
-	      "$cfg_path/.cloudConfigTimerCheck" \
-	      "$cfg_path/com.apple.mdm.depnag.plist" \
-	      "$cfg_path/com.apple.mdm.prelogin.plist" 2>/dev/null
-	touch "$cfg_path/.cloudConfigRecordNotFound" \
-	      "$cfg_path/.cloudConfigProfileInstalled"
-	success "marcadores resetados"
-}
+	# Reset markers
+	step "Resetting DEP markers..."
+	mkdir -p "$cfg"
+	rm -f "$cfg/.cloudConfigHasActivationRecord" \
+	      "$cfg/.cloudConfigRecordFound" \
+	      "$cfg/.cloudConfigTimerCheck" 2>/dev/null
+	touch "$cfg/.cloudConfigRecordNotFound" \
+	      "$cfg/.cloudConfigProfileInstalled"
+	success "Markers reset"
 
-disable_daemon_launchctl() {
-	sudo launchctl disable system/com.apple.ManagedClient.enroll 2>/dev/null || true
-	sudo launchctl disable system/com.apple.mdmclient.daemon.runatboot 2>/dev/null || true
-	success "daemon desativado (launchctl)"
-}
-
-disable_daemon_plist() {
-	local data_vol="$1"
-	[ -z "$data_vol" ] && return 1
-	local plist="$data_vol/private/var/db/com.apple.xpc.launchd/disabled.plist"
-	mkdir -p "$(dirname "$plist")"
-	[ -f "$plist" ] || printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict/></plist>\n' >"$plist"
+	# Disable daemon via launchd override
+	step "Disabling enrollment daemon..."
+	local ldp="$dm/private/var/db/com.apple.xpc.launchd/disabled.plist"
+	mkdir -p "$(dirname "$ldp")"
+	[ -f "$ldp" ] || printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict/></plist>\n' >"$ldp"
 	for label in com.apple.ManagedClient.enroll com.apple.mdmclient.daemon.runatboot; do
-		/usr/libexec/PlistBuddy -c "Add :$label bool true" "$plist" 2>/dev/null \
-			|| /usr/libexec/PlistBuddy -c "Set :$label true" "$plist" 2>/dev/null
+		$PB -c "Add :$label bool true" "$ldp" 2>/dev/null \
+			|| $PB -c "Set :$label true" "$ldp" 2>/dev/null
 	done
-	success "daemon desativado (plist override)"
+	success "Daemon disabled"
+
+	# Mark setup as done (for fresh install scenario)
+	touch "$dm/private/var/db/.AppleSetupDone" 2>/dev/null || true
 }
 
-create_user_recovery() {
-	local data_vol="$1"
-	[ -z "$data_vol" ] && error_exit "Volume de dados nao encontrado"
-
-	local dscl_path="$data_vol/private/var/db/dslocal/nodes/Default"
-	[ ! -d "$dscl_path" ] && error_exit "Diretorio de usuarios nao encontrado em $dscl_path"
-
-	read -p "Nome completo (padrao 'Apple'): " realName; realName="${realName:=Apple}"
-	read -p "Nome de usuario (padrao 'Apple'): " username; username="${username:=Apple}"
-	read -p "Senha (padrao '1234'): " passw; passw="${passw:=1234}"
-
-	step "Criando usuario $username"
-	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$username" 2>/dev/null || true
-	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$username" UserShell "/bin/zsh" 2>/dev/null
-	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$username" RealName "$realName" 2>/dev/null
-	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$username" UniqueID "501" 2>/dev/null
-	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$username" PrimaryGroupID "20" 2>/dev/null
-	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$username" NFSHomeDirectory "/Users/$username" 2>/dev/null
-	dscl -f "$dscl_path" localhost -passwd  "/Local/Default/Users/$username" "$passw" 2>/dev/null || warn "Falha ao definir senha"
-	dscl -f "$dscl_path" localhost -append  "/Local/Default/Groups/admin" GroupMembership "$username" 2>/dev/null || true
-	mkdir -p "$data_vol/Users/$username"
-	touch "$data_vol/private/var/db/.AppleSetupDone"
-	success "Usuario $username criado. Login: $username / $passw"
-}
-
-# ============================================================
-# MAIN
-# ============================================================
-env=$(detect_environment)
-data_vol=$(find_data_volume)
-sys_vol=""
-[ -n "$data_vol" ] && sys_vol=$(find_system_volume "$data_vol")
-
+# ------------------------------------------------------------------
+# Main
+# ------------------------------------------------------------------
 echo ""
-echo -e "${CYAN}============================================${NC}"
-echo -e "${CYAN}   Bypass MDM Express                      ${NC}"
-echo -e "${CYAN}============================================${NC}"
-echo ""
-echo -e "${BLU}Modo detectado:${NC} $env"
-[ -n "$data_vol" ] && echo -e "${BLU}Volume dados:${NC} $data_vol"
-[ -n "$sys_vol" ]  && echo -e "${BLU}Volume sistema:${NC} $sys_vol"
+echo -e "${CYAN}==============================================${NC}"
+echo -e "${CYAN}   Bypass MDM Express                        ${NC}"
+echo -e "${CYAN}   All-in-one: backup + bypass + restore     ${NC}"
+echo -e "${CYAN}==============================================${NC}"
 echo ""
 
-PS3="Escolha uma opcao: "
+if ! check_recovery; then
+	warn "This script should be run from Recovery mode."
+	warn "Restart and hold Power (Apple Silicon) or CMD+R (Intel)."
+	echo ""
+	read -p "Continue anyway? (y/N): " force
+	[[ "$force" =~ ^[Yy]$ ]] || exit 1
+fi
+
+data_mount=$(resolve_data_volume)
+echo ""
+
+PS3="Choose an option: "
 options=(
-	"Backup + Bypass MDM (recomendado)"
-	"Restore (voltar ao estado original)"
-	"Checar status do MDM"
-	"Sair"
+	"Backup + Bypass MDM (safe, reversible)"
+	"Restore original state (from backup)"
+	"Check current MDM status"
+	"Exit"
 )
 select opt in "${options[@]}"; do
 	case $opt in
-	"Backup + Bypass MDM (recomendado)")
+	"Backup + Bypass MDM (safe, reversible)")
 		echo ""
-
-		backup_state "$env" "$data_vol" "$sys_vol"
+		backup_state "$data_mount"
 		echo ""
-
-		hosts_path=$(get_hosts_path "$env" "$data_vol" "$sys_vol")
-		cfg_path=$(get_cfg_path "$env" "$data_vol" "$sys_vol")
-
-		if [ "$env" = "recovery" ]; then
-			step "Modo Recovery — bypass completo"
-			block_hosts "$hosts_path"
-			reset_markers "$cfg_path"
-			disable_daemon_plist "$data_vol" "$sys_vol"
-
-			echo ""
-			echo -e "${YEL}Criar usuario admin temporario?${NC}"
-			read -p "Se for setup novo (tela de enrolamento), digite 's' [s/N]: " create_user
-			if [[ "$create_user" =~ ^[Ss]$ ]]; then
-				create_user_recovery "$data_vol"
-			fi
-		else
-			step "Modo normal — bypass parcial (SIP $([ "$env" = "normal_sip_on" ] && echo "ATIVADO" || echo "DESATIVADO"))"
-			[ "$env" = "normal_sip_off" ] && warn "SIP desativado: escrita extra disponivel" || warn "SIP ativado: apenas bloqueio de dominios e launchctl"
-			
-			if [ -w "$hosts_path" ] || [ "$EUID" -eq 0 ]; then
-				block_hosts "$hosts_path"
-			else
-				warn "Sem permissao para escrever em $hosts_path (tente com sudo)"
-			fi
-
-			if [ "$env" != "normal_sip_on" ] && [ -n "$cfg_path" ]; then
-				reset_markers "$cfg_path"
-			fi
-
-			disable_daemon_launchctl
-		fi
-
+		suppress_enrollment "$data_mount"
 		echo ""
-		echo -e "${GRN}============================================${NC}"
-		echo -e "${GRN}  Pronto! Backup salvo em $BACKUP_DIR        ${NC}"
-		echo -e "${GRN}  Para restaurar: rode este script denovo   ${NC}"
-		echo -e "${GRN}  e escolha 'Restore'                       ${NC}"
-		echo -e "${GRN}============================================${NC}"
+		echo -e "${GRN}==============================================${NC}"
+		echo -e "${GRN}  Done! Backup saved to $BACKUP_DIR${NC}"
+		echo -e "${GRN}  To restore: re-run and pick option 2${NC}"
+		echo -e "${GRN}  Reboot your Mac now.${NC}"
+		echo -e "${GRN}==============================================${NC}"
 		break
 		;;
-
-	"Restore (voltar ao estado original)")
+	"Restore original state (from backup)")
 		echo ""
-		restore_state "$env" "$data_vol" "$sys_vol"
-		echo -e "${GRN}Estado original restaurado.${NC}"
+		restore_state
+		echo ""
+		echo -e "${GRN}Original state restored. Reboot to apply.${NC}"
 		break
 		;;
-
-	"Checar status do MDM")
+	"Check current MDM status")
 		echo ""
-		step "Checando enrolamento DEP..."
 		if command -v profiles &>/dev/null; then
-			profiles status -type enrollment 2>/dev/null || warn "nao foi possivel checar"
+			profiles status -type enrollment 2>/dev/null || warn "Could not check enrollment status"
 		else
-			warn "comando 'profiles' nao disponivel (rode do Recovery ou macOS normal)"
+			warn "'profiles' command not available"
 		fi
-
-		step "Hosts bloqueados:"
-		hosts_path=$(get_hosts_path "$env" "$data_vol" "$sys_vol")
-		if [ -f "$hosts_path" ]; then
-			grep -iE 'iprofiles|enrollment|mdm|acmdm' "$hosts_path" 2>/dev/null || echo "  (nenhum)"
+		echo ""
+		step "Blocked domains in hosts:"
+		if [ -f "$data_mount/private/etc/hosts" ]; then
+			grep -iE 'iprofiles|enrollment|mdm|acmdm' "$data_mount/private/etc/hosts" 2>/dev/null || echo "  (none)"
 		fi
-
-		step "Backup existente:"
+		echo ""
+		step "Existing backup:"
 		if [ -f "$BACKUP_DIR/timestamp" ]; then
 			echo "  $(cat "$BACKUP_DIR/timestamp")"
 		else
-			echo "  (nenhum)"
+			echo "  (none)"
 		fi
-		echo ""
 		break
 		;;
-
-	"Sair")
-		exit 0
-		;;
-	*) echo -e "${RED}Opcao invalida $REPLY${NC}" ;;
+	"Exit") exit 0 ;;
+	*) echo -e "${RED}Invalid option $REPLY${NC}" ;;
 	esac
 done

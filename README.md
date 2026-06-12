@@ -4,19 +4,40 @@
 
 A collection of scripts to bypass Mobile Device Management (MDM) enrollment during macOS setup.
 
-**Escolha seu script:**
+**Choose your script:**
 
-| Script | Melhor para | Executar de |
-|--------|-------------|-------------|
-| `bypass-mdm-express.sh` | **Recomendado.** Tudo em um. Backup + bypass + restore. | Recovery ou macOS normal |
-| `bypass-mdm-v3.sh` | Apple Silicon / macOS 11-26 | Recovery |
-| `bypass-mdm-v2.sh` | Casos simples, Intel | Recovery |
-| `bypass-mdm.sh` | Legado, nomes fixos | Recovery |
-| `bypass-mdm-dualboot.sh` | Dual-boot (gerenciado + pessoal) | macOS enrolado (sudo) |
+| Script | Best for | Run from |
+|--------|----------|----------|
+| `bypass-mdm-express.sh` | **Recommended.** All-in-one: backup + bypass + restore | Recovery |
+| `bypass-mdm-v3.sh` | Apple Silicon / macOS 11-26. SSV-aware. | Recovery |
+| `bypass-mdm-v2.sh` | Simple cases, Intel Macs | Recovery |
+| `bypass-mdm.sh` | Legacy, hardcoded volume names | Recovery |
+| `bypass-mdm-dualboot.sh` | Dual-boot (enrolled + personal macOS) | Enrolled OS (sudo) |
 
-### v3 — Apple Silicon / SSV-aware (Recommended)
+---
 
-The v3 script fixes the root cause of why v1/v2 fail on modern Macs: **System Volume sealing**. On Apple Silicon, macOS boots from a sealed, read-only snapshot. Writes to `/etc/hosts` or `/var/db/ConfigurationProfiles` on the System volume never reach the running OS. v3 writes everything to the **Data volume** (via `/private` firmlink) where the OS actually reads it.
+### Express — All-in-one (Recommended)
+
+Put this script on an external SSD, plug it into any Mac, run it from Recovery. No curl, no typing URLs, no downloads. Works entirely offline.
+
+**What it does:**
+1. Backs up your original state (hosts, config profiles, launchd config) to the SSD
+2. Suppresses MDM enrollment (blocks domains, resets markers, disables daemon)
+3. Can restore the original state later — take your Mac to Apple for re-enrollment, then restore
+
+```bash
+# Recovery mode -> Utilities -> Terminal
+chmod +x "/Volumes/YourSSDName/bypass-mdm-express.sh"
+"/Volumes/YourSSDName/bypass-mdm-express.sh"
+```
+
+The backup is stored on the SSD itself (`/.bypass-backup/`). To restore, re-run and pick "Restore original state".
+
+---
+
+### v3 — Apple Silicon / SSV-aware
+
+v3 fixes the root cause of why v1/v2 fail on modern Macs: **System Volume sealing**. On Apple Silicon, macOS boots from a sealed, read-only snapshot. Writes to `/etc/hosts` or `/var/db/ConfigurationProfiles` on the System volume never reach the running OS. v3 writes everything to the **Data volume** (via `/private` firmlink) where the OS actually reads it.
 
 **Additional improvements:**
 - Detects Data volume by APFS role (no hardcoded names)
@@ -31,13 +52,17 @@ The v3 script fixes the root cause of why v1/v2 fail on modern Macs: **System Vo
 curl -L https://raw.githubusercontent.com/assafdori/bypass-mdm/main/bypass-mdm-v3.sh -o bypass-mdm-v3.sh && chmod +x bypass-mdm-v3.sh && ./bypass-mdm-v3.sh
 ```
 
+---
+
 ### v2 — Automatic volume detection
 
-Improved version with dynamic volume detection. No need to know your volume name.
+Improved version with dynamic volume detection. No need to know your volume name. Now writes to Data volume paths (SSV-aware).
 
 ```bash
 curl -L https://raw.githubusercontent.com/assafdori/bypass-mdm/main/bypass-mdm-v2.sh -o bypass-mdm-v2.sh && chmod +x bypass-mdm-v2.sh && ./bypass-mdm-v2.sh
 ```
+
+---
 
 ### Original (legacy) — Hardcoded volumes
 
@@ -47,6 +72,8 @@ Original version with hardcoded "Macintosh HD" volume names.
 curl -L https://raw.githubusercontent.com/assafdori/bypass-mdm/main/bypass-mdm.sh -o bypass-mdm.sh && chmod +x ./bypass-mdm.sh && ./bypass-mdm.sh
 ```
 
+---
+
 ### Dual-boot setup
 
 If your Mac is enrolled by an organization but you have sudo access, you can create a separate partition with a fresh macOS install and bypass MDM on it:
@@ -55,30 +82,9 @@ If your Mac is enrolled by an organization but you have sudo access, you can cre
 curl -L https://raw.githubusercontent.com/assafdori/bypass-mdm/main/bypass-mdm-dualboot.sh -o bypass-mdm-dualboot.sh && sudo chmod +x bypass-mdm-dualboot.sh && sudo ./bypass-mdm-dualboot.sh
 ```
 
-Make sure the target volume names are correct — the script will ask for both the system and data volume names.
-
 ---
 
-### Express — Tudo em um (recomendado)
-
-O script **express** foi feito pra ser o mais simples possível:
-- Coloca num SSD externo, conecta em qualquer Mac, executa
-- Faz **backup automático** do estado original antes de qualquer modificação
-- **Restaura** tudo se precisar (leva na Apple, eles re-matriculam)
-- Detecta se está no Recovery ou no macOS normal e age conforme o possível
-- Nunca deleta seus dados
-
-```bash
-# 1. Copie o script pro seu SSD externo
-# 2. Conecte o SSD no Mac
-# 3. Abra o Terminal e:
-chmod +x /Volumes/SEU_SSD/bypass-mdm-express.sh
-sudo /Volumes/SEU_SSD/bypass-mdm-express.sh
-```
-
-O backup fica no próprio SSD (`/.bypass-backup`). Pra restaurar é só rodar de novo e escolher "Restore".
-
-### v3 — Apple Silicon / SSV-aware
+### Instructions (Recovery mode)
 
 1. Long press Power to shut down.
 2. Boot into Recovery:
@@ -86,8 +92,10 @@ O backup fica no próprio SSD (`/.bypass-backup`). Pra restaurar é só rodar de
    - **Intel**: Hold CMD + R during boot.
 3. Connect to WiFi.
 4. Open Terminal (Utilities > Terminal).
-5. Run the script (see above).
+5. Run the script.
 6. Reboot when done.
+
+---
 
 ### Legal
 
