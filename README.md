@@ -1,61 +1,76 @@
-# Bypass-MDM for MacOS 26 Tahoe💻
+# Bypass-MDM for macOS
 
 ![mdm-screen](https://raw.githubusercontent.com/assafdori/bypass-mdm/main/mdm-screen.png)
 
-#### Prerequisites ⚠️
+A collection of scripts to bypass Mobile Device Management (MDM) enrollment during macOS setup.
 
-- **It is advised to erase the hard-drive prior to starting.**
-- **It is advised to re-install MacOS using an external flash drive.**
-- **Device language needs to be set to English, it can be changed afterwards.**
+**Choose your script:**
 
+| Script | Best for | Run from |
+|--------|----------|----------|
+| `bypass-mdm-v3.sh` | Apple Silicon / macOS 11-26. **Recommended.** | Recovery |
+| `bypass-mdm-v2.sh` | Simple cases, Intel Macs | Recovery |
+| `bypass-mdm.sh` | Legacy, hardcoded volume names | Recovery |
+| `bypass-mdm-dualboot.sh` | Dual-boot (enrolled + personal macOS) | Enrolled OS (sudo) |
 
-#### Follow steps below to bypass MDM setup during a fresh installation of MacOS
+### v3 — Apple Silicon / SSV-aware (Recommended)
 
-> Upon arriving to the setup stage of forced MDM enrollement:
+The v3 script fixes the root cause of why v1/v2 fail on modern Macs: **System Volume sealing**. On Apple Silicon, macOS boots from a sealed, read-only snapshot. Writes to `/etc/hosts` or `/var/db/ConfigurationProfiles` on the System volume never reach the running OS. v3 writes everything to the **Data volume** (via `/private` firmlink) where the OS actually reads it.
 
-1. Long press Power button to forcefully shut down your Mac.
+**Additional improvements:**
+- Detects Data volume by APFS role (no hardcoded names)
+- Supports FileVault-encrypted volumes (unlocks automatically)
+- Reads the org MDM host from the activation record and blocks it
+- Disables the enrollment daemon via launchd override on the Data volume
+- Two modes: suppress-only (no user created) or full bypass
+- Leaves `gdmf.apple.com` and `albert.apple.com` unblocked (Software Update, iMessage)
 
-2. Hold the power button to start your Mac & boot into recovery mode.
-
-> a. **Apple-based Mac**: Hold Power button.\
-> b. **Intel-based Mac**: Hold <kbd>CMD</kbd> + <kbd>R</kbd> during boot.
-
-3. Connect to WiFi to activate your Mac.
-
-4. Enter Recovery Mode & Open Safari.
-
-5. Navigate to https://www.github.com/assafdori/bypass-mdm
-
-6. Copy the script below:
-
-```zsh
-curl https://raw.githubusercontent.com/assafdori/bypass-mdm/main/bypass-mdm.sh -o bypass-mdm.sh && chmod +x ./bypass-mdm.sh && ./bypass-mdm.sh
+```bash
+# Run in Recovery mode (Utilities > Terminal)
+curl -L https://raw.githubusercontent.com/assafdori/bypass-mdm/main/bypass-mdm-v3.sh -o bypass-mdm-v3.sh && chmod +x bypass-mdm-v3.sh && ./bypass-mdm-v3.sh
 ```
 
-7. Launch Terminal (Utilities > Terminal).
+### v2 — Automatic volume detection
 
-8. Paste (<kbd>CMD</kbd> + <kbd>V</kbd>) and Run the script (<kbd>ENTER</kbd>).
+Improved version with dynamic volume detection. No need to know your volume name.
 
-9. Input 1 for Autobypass.
+```bash
+curl -L https://raw.githubusercontent.com/assafdori/bypass-mdm/main/bypass-mdm-v2.sh -o bypass-mdm-v2.sh && chmod +x bypass-mdm-v2.sh && ./bypass-mdm-v2.sh
+```
 
-10. Press Enter to leave the default username 'Apple'.
+### Original (legacy) — Hardcoded volumes
 
-11. Press Enter to leave the default  password '1234'.
+Original version with hardcoded "Macintosh HD" volume names.
 
-12. Wait for the script to finish & Reboot your Mac.
+```bash
+curl -L https://raw.githubusercontent.com/assafdori/bypass-mdm/main/bypass-mdm.sh -o bypass-mdm.sh && chmod +x ./bypass-mdm.sh && ./bypass-mdm.sh
+```
 
-13. Sign in with user (Apple) & password (1234)
+### Dual-boot setup
 
-14. Skip all setup (Apple ID, Siri, Touch ID, Location Services)
+If your Mac is enrolled by an organization but you have sudo access, you can create a separate partition with a fresh macOS install and bypass MDM on it:
 
-15. Once on the desktop navigate to System Settings > Users and Groups, and create your real Admin account.
+```bash
+curl -L https://raw.githubusercontent.com/assafdori/bypass-mdm/main/bypass-mdm-dualboot.sh -o bypass-mdm-dualboot.sh && sudo chmod +x bypass-mdm-dualboot.sh && sudo ./bypass-mdm-dualboot.sh
+```
 
-16. Log out of the Apple profile, and sign in into your real profile.
+Make sure the target volume names are correct — the script will ask for both the system and data volume names.
 
-17. Feel free set up properly now (Apple ID, Siri, Touch ID, Location Services).
+---
 
-18. Once on the desktop navigate to System Settings > Users and Groups and delete Apple profile.
+### Instructions (Recovery mode)
 
-19. Congratulations, you're MDM free! 💫
+1. Long press Power to shut down.
+2. Boot into Recovery:
+   - **Apple Silicon**: Hold Power until "Loading startup options" appears, then Options > Continue.
+   - **Intel**: Hold CMD + R during boot.
+3. Connect to WiFi.
+4. Open Terminal (Utilities > Terminal).
+5. Run the script (see above).
+6. Reboot when done.
 
-###### Although it's virtually impossible to catch that you've removed the MDM (because it wasn't even configured), be aware that the serial number of the laptop will still be shown in the inventory system of your company. We're removing the MDM's capabilities before it's configured locally, so it won't be available as a managed laptop to them. Use with caution. Probably a good idea to have a valid excuse as well.
+### Legal
+
+This only suppresses MDM locally. Your serial stays in the org's Apple Business Manager. The permanent fix is them releasing it.
+
+Use on devices you own. I'm not responsible for what you do with this.
