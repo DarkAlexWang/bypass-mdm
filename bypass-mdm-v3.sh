@@ -261,9 +261,19 @@ select opt in "${options[@]}"; do
 			read -p "Username (default 'Apple'): " username; username="${username:=Apple}"
 			if msg=$(validate_username "$username"); then
 				if check_user_exists "$data_mount" "$username"; then
-					warn "User '$username' already exists."; continue
+					warn "User '$username' already exists."
+					read -p "Delete and recreate? (y/n): " del
+					if [[ "$del" =~ ^[Yy]$ ]]; then
+						dscl -f "$DS_NODE" localhost -delete "/Local/Default/Users/$username" 2>/dev/null || true
+						rm -rf "$data_mount/Users/$username" 2>/dev/null || true
+						success "Deleted existing user '$username'"
+						break
+					else
+						warn "Choose a different username."
+					fi
+				else
+					break
 				fi
-				break
 			else warn "$msg"; fi
 		done
 		while true; do
@@ -273,17 +283,28 @@ select opt in "${options[@]}"; do
 
 		uid=$(find_available_uid "$data_mount")
 		info "Using UID $uid"
-		dscl -f "$DS_NODE" localhost -create "/Local/Default/Users/$username" || error_exit "Failed to create user"
-		dscl -f "$DS_NODE" localhost -create "/Local/Default/Users/$username" UserShell "/bin/zsh"
-		dscl -f "$DS_NODE" localhost -create "/Local/Default/Users/$username" RealName "$realName"
-		dscl -f "$DS_NODE" localhost -create "/Local/Default/Users/$username" UniqueID "$uid"
-		dscl -f "$DS_NODE" localhost -create "/Local/Default/Users/$username" PrimaryGroupID "20"
-		dscl -f "$DS_NODE" localhost -create "/Local/Default/Users/$username" NFSHomeDirectory "/Users/$username"
-		dscl -f "$DS_NODE" localhost -passwd  "/Local/Default/Users/$username" "$passw" || error_exit "Failed to set password"
-		dscl -f "$DS_NODE" localhost -append  "/Local/Default/Groups/admin" GroupMembership "$username" || error_exit "Failed to grant admin"
+
+		set +e
+		dscl -f "$DS_NODE" localhost -create "/Local/Default/Users/$username" 2>/dev/null || error_exit "Failed to create user"
+		dscl -f "$DS_NODE" localhost -create "/Local/Default/Users/$username" UserShell "/bin/zsh" 2>/dev/null
+		dscl -f "$DS_NODE" localhost -create "/Local/Default/Users/$username" RealName "$realName" 2>/dev/null
+		dscl -f "$DS_NODE" localhost -create "/Local/Default/Users/$username" UniqueID "$uid" 2>/dev/null
+		dscl -f "$DS_NODE" localhost -create "/Local/Default/Users/$username" PrimaryGroupID "20" 2>/dev/null
+		dscl -f "$DS_NODE" localhost -create "/Local/Default/Users/$username" NFSHomeDirectory "/Users/$username" 2>/dev/null
+		if ! dscl -f "$DS_NODE" localhost -passwd "/Local/Default/Users/$username" "$passw" 2>/dev/null; then
+			error_exit "Failed to set password for '$username'. The user might still exist from a previous run — delete it first."
+		fi
+		dscl -f "$DS_NODE" localhost -append "/Local/Default/Groups/admin" GroupMembership "$username" 2>/dev/null || error_exit "Failed to grant admin"
+		set -e
+
 		mkdir -p "$data_mount/Users/$username" && success "Admin '$username' created"
 
 		touch "$SETUPDONE" && success "Setup Assistant will be skipped"
+
+		# Try to add user to FileVault (fixes "user not showing on login" on 15.6+)
+		if [ -x /usr/bin/fdesetup ] && fdesetup supportsauthorizedusers 2>/dev/null | grep -q true; then
+			fdesetup add -usertoadd "$username" 2>/dev/null || true
+		fi
 		echo ""
 
 		suppress_enrollment
