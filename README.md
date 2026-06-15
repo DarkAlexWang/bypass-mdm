@@ -2,237 +2,199 @@
 
 ![mdm-screen](https://raw.githubusercontent.com/assafdori/bypass-mdm/main/mdm-screen.png)
 
-A collection of scripts to bypass Mobile Device Management (MDM) enrollment during macOS setup.
+A script to bypass Mobile Device Management (MDM) enrollment during macOS setup.
 
-**Choose your script:**
+## 🚨 Update: June 2026
 
-| Script | Best for | Run from |
-|--------|----------|----------|
-| `bypass-mdm-express.sh` | **Recommended.** All-in-one: backup + bypass + restore | Recovery |
-| `bypass-mdm-v3.sh` | Apple Silicon / macOS 11-26. SSV-aware. | Recovery |
-| `bypass-mdm-v2.sh` | Enhanced with auto-detection & validation | Recovery |
-| `bypass-mdm.sh` | Legacy, hardcoded volume names | Recovery |
-| `bypass-mdm-dualboot.sh` | Dual-boot (enrolled + personal macOS) | Enrolled OS (sudo) |
+**Version 4 is now the default.** v4 hardens the script for Apple Silicon + Signed System Volume (macOS 11–26), adds an expanded domain blocklist, a clean undo mode, automatic hosts-file backups, and an interactive menu.
 
 ---
 
-## 🚀 Express — All-in-one (Recommended)
+## ✨ Features
 
-Put this script on an external SSD, plug it into any Mac, run it from Recovery. No curl, no typing URLs, no downloads. Works entirely offline.
-
-**What it does:**
-1. Backs up your original state (hosts, config profiles, launchd config) to the SSD
-2. Suppresses MDM enrollment (blocks domains, resets markers, disables daemon)
-3. Can restore the original state later — take your Mac to Apple for re-enrollment, then restore
-
-```bash
-# Recovery mode -> Utilities -> Terminal
-chmod +x "/Volumes/YourSSDName/bypass-mdm-express.sh"
-"/Volumes/YourSSDName/bypass-mdm-express.sh"
-```
-
-The backup is stored on the SSD itself (`/.bypass-backup/`). To restore, re-run and pick "Restore original state".
-
----
-
-### v3 — Apple Silicon / SSV-aware
-
-v3 fixes the root cause of why v1/v2 fail on modern Macs: **System Volume sealing**. On Apple Silicon, macOS boots from a sealed, read-only snapshot. Writes to `/etc/hosts` or `/var/db/ConfigurationProfiles` on the System volume never reach the running OS. v3 writes everything to the **Data volume** (via `/private` firmlink) where the OS actually reads it.
-
-**Additional improvements:**
-- Detects Data volume by APFS role (no hardcoded names)
-- Supports FileVault-encrypted volumes (unlocks automatically)
-- Reads the org MDM host from the activation record and blocks it
-- Disables the enrollment daemon via launchd override on the Data volume
-- Two modes: suppress-only (no user created) or full bypass
-- Leaves `gdmf.apple.com` and `albert.apple.com` unblocked (Software Update, iMessage)
-
-```bash
-# Run in Recovery mode (Utilities > Terminal)
-curl -L https://raw.githubusercontent.com/assafdori/bypass-mdm/main/bypass-mdm-v3.sh -o bypass-mdm-v3.sh && chmod +x bypass-mdm-v3.sh && ./bypass-mdm-v3.sh
-```
-
----
-
-### v2 — Automatic volume detection
-
-Enhanced version with dynamic volume detection. No need to know your volume name. SSV-aware — writes to Data volume paths.
-
-```bash
-curl -L https://raw.githubusercontent.com/assafdori/bypass-mdm/main/bypass-mdm-v2.sh -o bypass-mdm.sh && chmod +x ./bypass-mdm.sh && ./bypass-mdm.sh
-```
-
----
-
-### Original (legacy) — Hardcoded volumes
-
-Original version with hardcoded "Macintosh HD" volume names.
-
-```bash
-curl -L https://raw.githubusercontent.com/assafdori/bypass-mdm/main/bypass-mdm.sh -o bypass-mdm.sh && chmod +x ./bypass-mdm.sh && ./bypass-mdm.sh
-```
-
----
-
-### Dual-boot setup
-
-If your Mac is enrolled by an organization but you have sudo access, you can create a separate partition with a fresh macOS install and bypass MDM on it:
-
-```bash
-curl -L https://raw.githubusercontent.com/assafdori/bypass-mdm/main/bypass-mdm-dualboot.sh -o bypass-mdm-dualboot.sh && sudo chmod +x bypass-mdm-dualboot.sh && sudo ./bypass-mdm-dualboot.sh
-```
-
----
+- **🔍 Smart Volume Detection** — Auto-detects APFS Data volume by role, name, or manual input
+- **🔒 FileVault Support** — Prompts to unlock encrypted Data volumes automatically
+- **📋 Interactive Menu** — Choose from Suppress only, Full bypass, Verify, Undo, or Reboot
+- **🛡️ Expanded Domain Blocklist** — Blocks `identity.apple.com`, `albert.apple.com`, `cloudconfiguration.apple.com`, `*.mdmz.apple.com` in addition to standard MDM domains
+- **💾 Hosts Auto-Backup** — Creates `<etc>/hosts.bypass-mdm-backup-<timestamp>` before first modification
+- **↩️ Undo All Changes** — Restores hosts backup, deletes temp users, clears markers, re-enables daemons
+- **🔎 Verify Mode** — Inspects current DEP markers, hosts blocklines, and launchd overrides
+- **✅ Input Validation** — Validates usernames, passwords, and full names (blocks `dscl`-breaking characters)
+- **🎯 UID Conflict Resolution** — Automatically finds available UIDs (501–599)
+- **📊Verbose Output** — `-v` / `--verbose` echoes every `dscl`/`diskutil`/`plutil` command to stderr
+- **🔐 OAuth & Profile Purging** — Removes Machine-OAuth tokens and stale MDM payload profiles after suppression
+- **⚠️ Version Detection** — Warns on untested macOS versions (< 11 or > 26)
 
 ## ⚠️ Prerequisites
 
-- **It is strongly recommended to erase the hard drive prior to starting**
-- **It is recommended to reinstall macOS using an external flash drive**
-- **English language recommended** (not required for v2+, but recommended)
+- **Erase disk first** — Full erase via Recovery "Disk Utility" (not just format)
+- **Reinstall macOS** — Complete clean install from Recovery
+- **Boot back into Recovery Mode** before running the script
 
-## 📋 Installation & Usage
+## 📋 Usage
 
-### Step-by-Step Instructions
+### Quick Start
 
-Follow these steps to bypass MDM enrollment during a fresh macOS installation:
+**1.** Boot into **Recovery Mode**:
+   - **Apple Silicon**: Hold Power → "Loading startup options" → Options
+   - **Intel**: Hold <kbd>CMD</kbd> + <kbd>R</kbd> during boot
 
-> **Starting Point:** You've reached the MDM enrollment screen during macOS setup
+**2.** Connect to **WiFi**, then open **Utilities → Terminal**
 
-**1.** **Force Shutdown** - Long press the Power button to shut down your Mac
-
-**2.** **Boot into Recovery Mode:**
-
-- **Apple Silicon Mac**: Hold Power button until "Loading startup options" appears, then Options > Continue
-- **Intel-based Mac**: Hold <kbd>CMD</kbd> + <kbd>R</kbd> during boot
-
-**3.** **Connect to WiFi** to activate your Mac
-
-**4.** **Open Terminal** in Recovery Mode:
-
-- Click **Utilities** in the menu bar
-- Select **Terminal**
-
-**5.** **Run the bypass script** - Copy and paste this command into Terminal:
-
+**3.** Run the script:
 ```bash
-curl -L https://raw.githubusercontent.com/assafdori/bypass-mdm/main/bypass-mdm-v2.sh -o bypass-mdm.sh && chmod +x ./bypass-mdm.sh && ./bypass-mdm.sh
+curl -L https://raw.githubusercontent.com/assafdori/bypass-mdm/main/bypass-mdm-v4.sh -o bypass-mdm.sh && chmod +x ./bypass-mdm.sh && ./bypass-mdm.sh
 ```
 
-**6.** **Volume Detection** - The script will automatically detect your volumes:
+**4.** The script will auto-detect your Data volume, then present a menu:
 
-- System Volume (e.g., "Macintosh HD", "macOS", or your custom name)
-- Data Volume (e.g., "Data", "Macintosh HD - Data", or your custom name)
+```
+1) Suppress enrollment only (Mac already set up)
+2) Full bypass (create admin + suppress - for stuck setup)
+3) Verify current state
+4) Undo all changes
+5) Reboot & Exit
+```
 
-**7.** **Select Option 1** - "Bypass MDM from Recovery"
+### Menu Options Explained
 
-**8.** **Create Temporary User** - Configure the admin account (or press Enter for defaults):
+| Option | What It Does | Use When |
+|--------|-------------|----------|
+| **Suppress only** | Blocks MDM domains, clears DEP records, disables enrollment daemon. No user created. | Mac is already set up but keeps nagging about enrollment |
+| **Full bypass** | Creates a temp admin account + `.AppleSetupDone`, then runs same suppression | Mac is stuck at the Remote Management / Setup Assistant screen |
+| **Verify** | Shows current DEP markers, hosts blocklines, launchd overrides, macOS version | Want to check what the script has done before rebooting |
+| **Undo all** | Restores hosts from backup, deletes temp users (`Apple`/`MDMBypass`), clears markers, re-enables daemons | Changed your mind, need to re-enroll |
+| **Reboot & Exit** | Reboots the Mac immediately | After any operation above |
 
-- **Fullname**: Apple (default)
-- **Username**: Apple (default)
-- **Password**: 1234 (default)
+### Full Bypass: Creating a Temp Admin
 
-> **Tip:** The script validates your input and will prompt you to retry if there are issues
+When selecting "Full bypass", you'll be prompted for:
+- **Full name** (default: `Apple`) — supports alphanumeric; blocks `\`, quotes, backticks, `;`, `|`, `$`
+- **Username** (default: `Apple`) — letters, numbers, `_`, `-` only; must start with letter/underscore
+- **Password** (default: `1234`) — minimum 4 characters
 
-**9.** **Wait for Completion** - You'll see progress messages:
+### Verbose Mode
 
-- ✓ Validating system paths
-- ✓ Creating user account
-- ✓ Blocking MDM domains
-- ✓ Configuring MDM bypass settings
-
-**10.** **Reboot** - When you see "MDM Bypass Completed Successfully", close Terminal and reboot
+Add `-v` or `--verbose` before the menu appears to echo every `dscl`/`diskutil`/`plutil` command to stderr:
+```bash
+./bypass-mdm.sh -v
+```
 
 ---
 
-### 🔄 Post-Installation Steps
+## 🔄 Post-Installation Steps
 
-**11.** **Login** with the temporary account:
+**1.** **Login** with the temp account (default: `Apple` / `1234`)
 
-- Username: `Apple` (or your custom username)
-- Password: `1234` (or your custom password)
+**2.** **Skip Setup** — Skip all prompts (Apple ID, Siri, Touch ID, Location Services)
 
-**12.** **Skip Setup** - Skip all prompts (Apple ID, Siri, Touch ID, Location Services)
+**3.** **Create Real Account:**
+   - Navigate to **System Settings > Users and Groups**
+   - Create your actual Admin account
 
-**13.** **Create Real Account:**
+**4.** **Switch Accounts** — Log out and sign in to your new account
 
-- Navigate to **System Settings > Users and Groups**
-- Create your actual Admin account with your preferred credentials
+**5.** **Set Up Properly** — Configure Apple ID, Siri, Touch ID, etc.
 
-**14.** **Switch Accounts** - Log out and sign in to your new account
+**6.** **Clean Up** — Delete the temp account:
+   - Go to **System Settings > Users and Groups**
+   - Select the temp profile and click the minus (−) button
 
-**15.** **Setup Properly** - Now configure Apple ID, Siri, Touch ID, etc.
+**7.** **Restore Hosts File** (recommended):
+   ```bash
+   sudo mv /private/etc/hosts.bypass-mdm-backup-* /private/etc/hosts
+   ```
 
-**16.** **Clean Up** - Delete the temporary Apple profile:
+**8.** **Re-enroll** (optional) — If you want MDM back, delete `/private/var/db/mdm` flags and re-push enrollment profile
 
-- Go to **System Settings > Users and Groups**
-- Select the Apple profile and click the minus (−) button
-
-**17.** **🎉 Done!** You're MDM free!
+**🎉 Done!**
 
 ---
 
 ## 🔧 Troubleshooting
 
-### Volume Detection Issues
-
-**Problem:** Script fails to detect volumes
-
-**Solutions:**
+### Volume Detection Fails
 
 - Ensure you're in Recovery Mode (not booted into macOS normally)
 - Verify macOS is installed on your drive
-- Check your drive is visible in Disk Utility
-- Try the original version (legacy, hardcoded volume names):
+- Check Disk Utility — the Data volume must be visible
+- If auto-detection fails, the script will prompt for the disk identifier manually
 
-```bash
-curl -L https://raw.githubusercontent.com/assafdori/bypass-mdm/main/bypass-mdm.sh -o bypass-mdm.sh && chmod +x ./bypass-mdm.sh && ./bypass-mdm.sh
+### `fdesetup` Fails in Recovery
+
+On Apple Silicon Recovery, `fdesetup` may not be available or functional. If you see:
 ```
+WARNING: fdesetup add FAILED.
+```
+After reboot, run:
+```bash
+sudo fdesetup add -usertoadd Apple
+```
+Replace `Apple` with your temp username if you used a custom one.
 
 ### Permission Errors
 
-**Problem:** Permission denied errors
-
-**Solutions:**
-
-- Confirm you're running from Terminal in Recovery Mode
-- Recovery Mode automatically provides elevated privileges
-- Make sure the script is executable: `chmod +x bypass-mdm.sh`
+- Confirm you're running from Terminal in **Recovery Mode** (not a normal boot shell)
+- Recovery Mode provides root-level access automatically
 
 ### Script Won't Execute
 
-**Problem:** Script doesn't run
-
-**Solutions:**
-
 ```bash
-# Make sure it's executable
 chmod +x bypass-mdm.sh
-
-# Run it again
 ./bypass-mdm.sh
 ```
 
-### Invalid Username or Password
+### Restoring Hosts After Cleanup
 
-**Problem:** Script rejects your username/password
-
-**Validation Rules:**
-
-- **Username:** Letters, numbers, underscore, hyphen only; must start with letter or underscore
-- **Password:** Minimum 4 characters
-- Press Enter to use defaults if unsure
+If you lost the backup file, you can manually remove the v4 block:
+```bash
+# Remove everything from "# Added by bypass-mdm-v4" to the next blank line
+sudo sed -i '' '/# Added by bypass-mdm-v4/,/^$/d' /private/etc/hosts
+```
 
 ---
 
 ## 📦 Version Information
 
-| Version | Description | Status |
-|---------|-------------|--------|
-| `bypass-mdm-express.sh` | All-in-one backup + bypass + restore | ✅ **Recommended** |
-| `bypass-mdm-v3.sh` | Most robust, SSV-aware, FileVault support | ✅ **Recommended for Apple Silicon** |
-| `bypass-mdm-v2.sh` | Enhanced with auto-detection & validation | ✅ **Recommended** |
-| `bypass-mdm.sh` | Original version with hardcoded volume names | ⚠️ Legacy |
-| `bypass-mdm-dualboot.sh` | Dual-boot MDM bypass | 🔧 Special use |
+| Version              | Description                                      | Status           |
+|----------------------|--------------------------------------------------|------------------|
+| `bypass-mdm-v4.sh`   | Hardened: expanded blocklist, undo, backup, verify | ✅ **Recommended** |
+| `bypass-mdm-v3.sh`   | Previous release                                 | ⚠️ Legacy        |
+| `bypass-mdm-v2.sh`   | Auto-detection & input validation                | ⚠️ Deprecated    |
+| `bypass-mdm.sh`      | Original (hardcoded volume names)                | ⚠️ Legacy        |
+
+---
+
+## 📝 Changelog
+
+### v4 (June 2026)
+- Expanded domain blocklist: `identity.apple.com`, `albert.apple.com`, `cloudconfiguration.apple.com`, `*.mdmz.apple.com`
+- Fixed hosts-file duplicate entries (exact-line matching instead of trailing regex)
+- `realName` input validation (blocks `dscl`-breaking characters: `\`, quotes, backticks, `;`, `|`, `$`)
+- `fdesetup` guarded with explicit post-reboot remediation on Apple Silicon Recovery
+- Home directory ownership & permissions enforced (`chmod 700`, correct UID)
+- "Undo all changes" menu option: restores hosts backup, deletes temp users, clears markers, re-enables daemons
+- `-v` / `--verbose` flag for headless debugging
+- `sw_vers`-based macOS version detection with untested-version warnings
+- Hosts auto-backup: `hosts.bypass-mdm-backup-<timestamp>`
+- Machine-OAuth token and MDM payload profile purging
+
+### v3 (March 2026)
+- DEP suppression mode, daemon disabling, improved SSV detection
+
+### v2 (February 2026)
+- Automatic volume detection, comprehensive error handling, input validation, UID conflict detection
+
+---
+
+## ⚠️ Important Limitations
+
+- This script **SUPPRESSES** enrollment locally. It does NOT remove your device from the organization's Apple Business/School Manager.
+- Your serial number will still appear in the org's inventory and will re-fetch whenever the Mac reaches Apple's servers.
+- **Never run `profiles renew`** after bypassing — it will re-trigger enrollment.
+- **Avoid "Erase All Content & Settings"** / factory reset — it will re-download the DEP record.
+
+---
 
 ### ❤️ Optional Contributions
 
@@ -241,24 +203,20 @@ Many people have reached out asking how to say thank you for saving their Mac. *
 People have forked this repository and put the script behind a pay-wall. I do not care at all. Once again, crypto contributions are not expected, but feel free if you want to.
 
 **Bitcoin (BTC):**
-
 ```
 bc1qzguh4908r7wguz20ylzeggya9d38t6hega5ppf
 ```
 
 **Monero (XMR):**
-
 ```
 45RnFseY4gNZv58DvShz2KJEbx1EyaTtaMCDnU5th21KbRThWurjjK6iugEdq9wfc4Kbw3a7AAyqo6WnEmL1StAMJur8QJp
 ```
 
 ## ⚖️ Legal Disclaimer
 
-> **Important:** Although it's virtually impossible to detect that you've removed MDM (because it was never configured locally), be aware that your device's serial number will still appear in your organization's inventory system. This script prevents MDM from being configured locally, making the device unmanageable remotely.
+> **Important:** Although it's virtually impossible to detect that you've suppressed MDM (because it was never configured locally), be aware that your device's serial number will still appear in your organization's inventory system. This script prevents MDM from being configured locally, making the device unmanageable remotely.
 >
 > **Use responsibly and at your own risk.** This tool is intended for personal devices and should not be used to circumvent legitimate organizational policies without proper authorization.
->
-> This only suppresses MDM locally. Your serial stays in the org's Apple Business Manager. The permanent fix is them releasing it.
 
 ---
 
